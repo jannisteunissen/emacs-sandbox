@@ -12,7 +12,7 @@ selectively apply them to the host file system.
 - `Linux >= 5.11` with user namespaces and overlayfs available
 - `bubblewrap` 0.9 or later, with overlayfs support
 - `rsync` for copying from/to the sandbox
-- `python3` for the `edit_file` tool in the sandbox
+- `python3` for the `read_file` and `edit_file` tools in the sandbox
 - [gptel](https://github.com/karthink/gptel/) to use the included model tools
 
 ## Installation
@@ -25,7 +25,7 @@ Place this directory somewhere and load it, for example:
 ```
 
 If gptel is available, loading `sandbox-tools` will register `run_command`,
-`write_file`, and `edit_file` with gptel under the `sandbox` category (see
+`read_file`, `write_file`, and `edit_file` with gptel under the `sandbox` category (see
 below for details).
 
 To bind the menu to a key use for example:
