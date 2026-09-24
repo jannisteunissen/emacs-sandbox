@@ -95,27 +95,17 @@ reset, so use with care!
 Tool calls do not ask for confirmation, except for network acces.
 
 - **`run_command`** runs a Bash command from `/workspace`. Each call has a
-  fresh shell and environment; chain commands when you need to retain a
-  directory change (`cd subdir && ...`). Only one command may run at a time
-  for a given project. Standard error is combined with standard output. The
-  captured output is capped and returned as a head-and-tail excerpt. The
-  command is timed out after `sandbox-tools-timeout` seconds (120 by default).
-  Prefer bounded inspection commands such as `grep`, `head`, `sed -n`, `wc`,
-  or `git ls-files` rather than dumping large files.
-- **`read_file`** returns a text file's lines verbatim (optionally from
-  `offset`, at most `limit` lines). Output is cut at a line boundary after
-  `sandbox-tools-max-read-output` bytes (60000 by default), with a note giving
-  the offset to continue from. Requires Python 3 in the sandbox.
-- **`write_file`** creates or overwrites a file in the project overlay. Supply
-  the entire file contents; it is not a patch operation. Its path must be
-  relative to the project and remain within the project root.
-- **`edit_file`** replaces a literal block in a file in the overlay. Read the
-  file first and provide a unique, verbatim `old` block with useful context;
-  `new` is the complete replacement (the empty string deletes the block).
-  It can make a whitespace/indentation-tolerant match if the exact block is
-  not found. By default the match must be unique; `replace_all: true` replaces
-  every match. On failure no edit is made; on success the tool returns a diff.
-  This tool requires Python 3 in the sandbox.
+  fresh shell and environment. Only one command can run at a time for a given
+  project. Standard error is combined with standard output. If the output
+  exceeds `sandbox-tools-max-output`, it is stored in a temporary file (whose
+  name is given) and only the start and end of the output are returned.
+- **`read_file`** returns a text file's lines. Output is cut at a line
+  boundary after `sandbox-tools-max-read-output` bytes, with a note giving the
+  offset to continue from. Requires Python 3 in the sandbox.
+- **`write_file`** creates or overwrites a file in the project overlay. The
+  entire file contents should be passed.
+- **`edit_file`** replaces a literal block in a file in a somewhat robust manner.
+  Requires Python 3 in the sandbox.
 
 
 ## Reviewing, applying, and discarding changes
