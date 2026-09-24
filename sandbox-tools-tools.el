@@ -1,4 +1,4 @@
-;;; emacs-sandbox-tools.el --- gptel tools for emacs-sandbox -*- lexical-binding: t; -*-
+;;; sandbox-tools-tools.el --- gptel tools for sandbox-tools -*- lexical-binding: t; -*-
 
 ;; Author: Jannis Teunissen <jannis.teunissen@cwi.nl>
 ;; Assisted-by: Claude:opus-5.5
@@ -12,11 +12,11 @@
 ;;; Code:
 
 (require 'gptel)
-(require 'emacs-sandbox)
+(require 'sandbox-tools)
 
 ;;;; Argument helpers
 
-(defun emacs-sandbox--true-p (value)
+(defun sandbox-tools--true-p (value)
   "Non-nil if tool argument VALUE is an explicit true value.
 True values are t, :json-true, a non-zero number, or one of the strings
 \"true\", \"t\", \"yes\" and \"1\".  Everything else is false."
@@ -29,7 +29,7 @@ True values are t, :json-true, a non-zero number, or one of the strings
     ((pred numberp) (/= value 0))
     (_ nil)))
 
-(defun emacs-sandbox--string-arg (name value &optional allow-empty)
+(defun sandbox-tools--string-arg (name value &optional allow-empty)
   "Return tool argument NAME's VALUE, checking that it is a string.
 If ALLOW-EMPTY is non-nil, \"\" is accepted and nil or :null become \"\"."
   (cond ((and (stringp value) (or allow-empty (not (string-empty-p value))))
@@ -39,7 +39,7 @@ If ALLOW-EMPTY is non-nil, \"\" is accepted and nil or :null become \"\"."
         (t (user-error "Invalid argument `%s': expected a %sstring, got %S"
                        name (if allow-empty "" "non-empty ") value))))
 
-(defmacro emacs-sandbox--with-cb (callback &rest body)
+(defmacro sandbox-tools--with-cb (callback &rest body)
   "Run BODY, reporting any error or quit to CALLBACK.
 An async gptel tool must always call its callback, or the request hangs."
   (declare (indent 1) (debug (form body)))
@@ -53,7 +53,7 @@ An async gptel tool must always call its callback, or the request hangs."
 
 ;;;; run_command
 
-(defun emacs-sandbox--confirm-network (command)
+(defun sandbox-tools--confirm-network (command)
   "Ask the user whether COMMAND may run with network access."
   (yes-or-no-p
    (format "Sandbox [NETWORK — host net & localhost!]: run `%s'? "
@@ -86,16 +86,16 @@ network access (needs user approval; grants internet + host network + \
 localhost).  Otherwise omit it or pass false."))
  :function
  (lambda (cb command &optional network &rest _)
-   (emacs-sandbox--with-cb cb
-     (let ((command (emacs-sandbox--string-arg "command" command))
-           (network (emacs-sandbox--true-p network)))
-       (if (and network (not (emacs-sandbox--confirm-network command)))
+   (sandbox-tools--with-cb cb
+     (let ((command (sandbox-tools--string-arg "command" command))
+           (network (sandbox-tools--true-p network)))
+       (if (and network (not (sandbox-tools--confirm-network command)))
            (funcall cb "User denied network execution of this command.")
-         (emacs-sandbox--run cb command network))))))
+         (sandbox-tools--run cb command network))))))
 
 ;;;; write_file
 
-(defconst emacs-sandbox--write-script "\
+(defconst sandbox-tools--write-script "\
 f=%s
 old=0
 [ -f \"$f\" ] && old=$(wc -c < \"$f\")
@@ -128,18 +128,18 @@ Safety:
                 :description "COMPLETE new file contents (not a patch/fragment)."))
  :function
  (lambda (cb path content &rest _)
-   (emacs-sandbox--with-cb cb
-     (let ((path (emacs-sandbox--string-arg "path" path))
-           (content (emacs-sandbox--string-arg "content" content t)))
-       (emacs-sandbox--check-path path)
-       (emacs-sandbox--run cb
-                           (format emacs-sandbox--write-script
+   (sandbox-tools--with-cb cb
+     (let ((path (sandbox-tools--string-arg "path" path))
+           (content (sandbox-tools--string-arg "content" content t)))
+       (sandbox-tools--check-path path)
+       (sandbox-tools--run cb
+                           (format sandbox-tools--write-script
                                    (shell-quote-argument path))
                            nil content)))))
 
 ;;;; edit_file
 
-(defun emacs-sandbox--script-source (file)
+(defun sandbox-tools--script-source (file)
   "Return the contents of FILE, found next to this library."
   (with-temp-buffer
     (insert-file-contents
@@ -147,7 +147,7 @@ Safety:
                              (or load-file-name buffer-file-name))))
     (buffer-string)))
 
-(defun emacs-sandbox--python-command (script &rest args)
+(defun sandbox-tools--python-command (script &rest args)
   "Shell command running Python SCRIPT (source text) with ARGS."
   (format "command -v python3 >/dev/null 2>&1 || \
 { echo 'FAILED: python3 is not available in the sandbox'; exit 127; }
@@ -155,11 +155,11 @@ exec python3 -c %s %s"
           (shell-quote-argument script)
           (mapconcat #'shell-quote-argument args " ")))
 
-(defconst emacs-sandbox--edit-script
-  (emacs-sandbox--script-source "edit_file.py")
+(defconst sandbox-tools--edit-script
+  (sandbox-tools--script-source "edit_file.py")
   "Source of edit_file.py, which runs inside the sandbox for `edit_file'.")
 
-(defun emacs-sandbox--edit-input (old new)
+(defun sandbox-tools--edit-input (old new)
   "Standard input for edit_file.py: byte counts of OLD and NEW, then both."
   (let ((bytes (lambda (s) (length (encode-coding-string s 'utf-8-unix)))))
     (format "%d %d\n%s%s" (funcall bytes old) (funcall bytes new) old new)))
@@ -195,25 +195,25 @@ occurrence instead of requiring `old' to be unique.  Otherwise omit it or \
 pass false."))
  :function
  (lambda (cb path old new &optional replace_all &rest _)
-   (emacs-sandbox--with-cb cb
-     (let ((path (emacs-sandbox--string-arg "path" path))
-           (old  (emacs-sandbox--string-arg "old" old))
-           (new  (emacs-sandbox--string-arg "new" new t))
-           (mode (if (emacs-sandbox--true-p replace_all) "all" "one")))
-       (emacs-sandbox--check-path path)
-       (emacs-sandbox--run
+   (sandbox-tools--with-cb cb
+     (let ((path (sandbox-tools--string-arg "path" path))
+           (old  (sandbox-tools--string-arg "old" old))
+           (new  (sandbox-tools--string-arg "new" new t))
+           (mode (if (sandbox-tools--true-p replace_all) "all" "one")))
+       (sandbox-tools--check-path path)
+       (sandbox-tools--run
         cb
-        (emacs-sandbox--python-command emacs-sandbox--edit-script path mode)
+        (sandbox-tools--python-command sandbox-tools--edit-script path mode)
         nil
-        (emacs-sandbox--edit-input old new))))))
+        (sandbox-tools--edit-input old new))))))
 
 ;;;; read_file
 
-(defconst emacs-sandbox--read-script
-  (emacs-sandbox--script-source "read_file.py")
+(defconst sandbox-tools--read-script
+  (sandbox-tools--script-source "read_file.py")
   "Source of read_file.py, which runs inside the sandbox for `read_file'.")
 
-(defun emacs-sandbox--int-arg (name value default)
+(defun sandbox-tools--int-arg (name value default)
   "Return tool argument NAME's VALUE as a non-negative integer.
 Return DEFAULT if VALUE is absent (nil, :null or \"\")."
   (let ((n (cond ((memq value '(nil :null)) default)
@@ -248,23 +248,23 @@ larger output limit than run_command.
 as many as fit in the output limit)."))
  :function
  (lambda (cb path &optional offset limit &rest _)
-   (emacs-sandbox--with-cb cb
-     (let ((path   (emacs-sandbox--string-arg "path" path))
-           (offset (emacs-sandbox--int-arg "offset" offset 1))
-           (limit  (emacs-sandbox--int-arg "limit" limit 0)))
-       (emacs-sandbox--check-path path)
+   (sandbox-tools--with-cb cb
+     (let ((path   (sandbox-tools--string-arg "path" path))
+           (offset (sandbox-tools--int-arg "offset" offset 1))
+           (limit  (sandbox-tools--int-arg "limit" limit 0)))
+       (sandbox-tools--check-path path)
        ;; read_file.py caps the content itself, at a line boundary.  Raise
        ;; the generic head+tail cap (read while building the wrapper
        ;; script, synchronously) so it leaves room for header and notes.
-       (let ((emacs-sandbox-max-output
-              (max emacs-sandbox-max-output
-                   (+ emacs-sandbox-max-read-output 4096 (string-bytes path)))))
-         (emacs-sandbox--run
+       (let ((sandbox-tools-max-output
+              (max sandbox-tools-max-output
+                   (+ sandbox-tools-max-read-output 4096 (string-bytes path)))))
+         (sandbox-tools--run
           cb
-          (emacs-sandbox--python-command
-           emacs-sandbox--read-script path
+          (sandbox-tools--python-command
+           sandbox-tools--read-script path
            (number-to-string offset) (number-to-string limit)
-           (number-to-string emacs-sandbox-max-read-output))))))))
+           (number-to-string sandbox-tools-max-read-output))))))))
 
-(provide 'emacs-sandbox-tools)
-;;; emacs-sandbox-tools.el ends here
+(provide 'sandbox-tools-tools)
+;;; sandbox-tools-tools.el ends here

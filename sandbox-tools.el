@@ -1,4 +1,4 @@
-;;; emacs-sandbox.el --- Run tools in a sandbox -*- lexical-binding: t; -*-
+;;; sandbox-tools.el --- Run tools in a sandbox -*- lexical-binding: t; -*-
 
 ;; Author: Jannis Teunissen <jannis.teunissen@cwi.nl>
 ;; Assisted-by: Claude:opus-5.5
@@ -6,7 +6,7 @@
 ;; Version: 0.1
 ;; Package-Requires: ((emacs "29.1") (transient "0.7.8"))
 
-;; URL: https://github.com/jannisteunissen/emacs-sandbox
+;; URL: https://github.com/jannisteunissen/sandbox-tools
 
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -29,15 +29,15 @@
 
 ;; Run shell commands for an LLM (e.g. gptel) inside a bubblewrap sandbox.
 ;; The project is mounted as an overlay, so every write lands in a scratch
-;; directory until you review and apply it (see `emacs-sandbox-menu').
+;; directory until you review and apply it (see `sandbox-tools-menu').
 ;;
 ;; Host requirements: Linux >= 5.11 (unprivileged overlayfs in user
 ;; namespaces), bubblewrap >= 0.9 and rsync.  The `edit_file' tool also
 ;; needs python3 inside the sandbox.
 ;;
 ;; This file holds the options, path handling and the command runner.
-;; `emacs-sandbox-review' has the diff/apply commands and
-;; `emacs-sandbox-tools' the gptel tool definitions.
+;; `sandbox-tools-review' has the diff/apply commands and
+;; `sandbox-tools-tools' the gptel tool definitions.
 
 ;;; Code:
 
@@ -48,9 +48,9 @@
 
 ;;;; Options
 
-(defgroup emacs-sandbox nil "Sandboxed LLM tools." :group 'tools)
+(defgroup sandbox-tools nil "Sandboxed LLM tools." :group 'tools)
 
-(defcustom emacs-sandbox-ro-binds
+(defcustom sandbox-tools-ro-binds
   '("/usr" "/bin" "/sbin" "/lib" "/lib32" "/lib64"
     "/etc/resolv.conf" "/etc/hosts" "/etc/ssl" "/etc/ca-certificates"
     "/etc/nsswitch.conf" "/etc/localtime" "/etc/passwd" "/etc/group"
@@ -60,18 +60,18 @@ Missing paths are skipped.  /etc/passwd and /etc/group are needed by
 programs that look up the current user (git, python, ssh)."
   :type '(repeat string))
 
-(defcustom emacs-sandbox-cache-binds nil
+(defcustom sandbox-tools-cache-binds nil
   "Writable host cache mounts as (HOST-SRC . SANDBOX-DST) pairs.
 For example:
   ((\"~/.cargo/registry\" . \"/home/sandbox/.cargo/registry\"))
 WARNING: HOST-SRC is directly writable on the host and bypasses the overlay."
   :type '(alist :key-type directory :value-type string))
 
-(defcustom emacs-sandbox-preserve-env '("LANG" "LC_ALL" "LC_CTYPE")
+(defcustom sandbox-tools-preserve-env '("LANG" "LC_ALL" "LC_CTYPE")
   "Host environment variables copied into the otherwise empty environment."
   :type '(repeat string))
 
-(defcustom emacs-sandbox-env
+(defcustom sandbox-tools-env
   '(("HOME"     . "/home/sandbox")
     ("TMPDIR"   . "/tmp")
     ("TERM"     . "dumb")
@@ -88,47 +88,47 @@ WARNING: HOST-SRC is directly writable on the host and bypasses the overlay."
   "Environment variables set inside the sandbox (PATH is set separately)."
   :type '(alist :key-type string :value-type string))
 
-(defcustom emacs-sandbox-path
+(defcustom sandbox-tools-path
   "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin"
   "PATH inside the sandbox."
   :type 'string)
 
-(defcustom emacs-sandbox-max-output 6000
+(defcustom sandbox-tools-max-output 6000
   "Bytes of command output (head + tail) handed back to the model."
   :type 'integer)
 
-(defcustom emacs-sandbox-max-read-output 60000
+(defcustom sandbox-tools-max-read-output 60000
      "Bytes of file content returned by the read_file tool."
      :type 'integer)
 
-(defcustom emacs-sandbox-hard-output-limit (* 8 1024 1024)
+(defcustom sandbox-tools-hard-output-limit (* 8 1024 1024)
   "Truncate captured command output after this many bytes."
   :type 'integer)
 
-(defcustom emacs-sandbox-timeout 120
+(defcustom sandbox-tools-timeout 120
   "Seconds before a command is killed."
   :type 'integer)
 
-(defcustom emacs-sandbox-ulimits "ulimit -u 512 -c 0"
+(defcustom sandbox-tools-ulimits "ulimit -u 512 -c 0"
   "Shell code run before each command to set resource limits.
 Avoid -v (breaks JVM, Go and rustc) and -f (breaks compilers); output
-size is capped by `emacs-sandbox-hard-output-limit' instead."
+size is capped by `sandbox-tools-hard-output-limit' instead."
   :type 'string)
 
-(defcustom emacs-sandbox-keep-spills 20
+(defcustom sandbox-tools-keep-spills 20
   "Number of truncated command outputs kept in the sandbox's /tmp."
   :type 'natnum)
 
-(defcustom emacs-sandbox-scratch-dir (locate-user-emacs-file "sandbox/")
+(defcustom sandbox-tools-scratch-dir (locate-user-emacs-file "sandbox/")
   "Directory holding each project's overlay, staging area, /tmp and HOME.
 It must be on a filesystem that supports user.* xattrs (ext4, xfs,
 btrfs); overlayfs fails on tmpfs and some network filesystems."
   :type 'directory)
 
-(defconst emacs-sandbox--workdir "/workspace" "Project path inside the sandbox.")
-(defconst emacs-sandbox--homedir "/home/sandbox" "HOME inside the sandbox.")
+(defconst sandbox-tools--workdir "/workspace" "Project path inside the sandbox.")
+(defconst sandbox-tools--homedir "/home/sandbox" "HOME inside the sandbox.")
 
-(defun emacs-sandbox--check-programs (&rest programs)
+(defun sandbox-tools--check-programs (&rest programs)
   "Signal a `user-error' unless all host PROGRAMS are on `exec-path'."
   (when-let* ((missing (seq-remove #'executable-find programs)))
     (user-error "Sandbox needs these programs on PATH: %s"
@@ -136,16 +136,16 @@ btrfs); overlayfs fails on tmpfs and some network filesystems."
 
 ;;;; Project and scratch paths
 
-(defun emacs-sandbox--overlap-p (a b)
+(defun sandbox-tools--overlap-p (a b)
   "Non-nil if directory A contains B or B contains A."
   (or (file-in-directory-p a b) (file-in-directory-p b a)))
 
-(defun emacs-sandbox--scratch-root ()
+(defun sandbox-tools--scratch-root ()
   "The scratch directory, with symlinks resolved."
   (file-name-as-directory
-   (file-truename (expand-file-name emacs-sandbox-scratch-dir))))
+   (file-truename (expand-file-name sandbox-tools-scratch-dir))))
 
-(defun emacs-sandbox-root ()
+(defun sandbox-tools-root ()
   "Return the root of the current project, with symlinks resolved.
 This is the nearest parent containing .git, else the project.el root,
 else `default-directory'.  Refuses broad roots such as / or HOME."
@@ -159,102 +159,102 @@ else `default-directory'.  Refuses broad roots such as / or HOME."
                   (list "/" "/home" "/tmp" "/root"
                         (directory-file-name (file-truename "~/"))))
       (user-error "Refusing to sandbox %s" root))
-    (when (emacs-sandbox--overlap-p (emacs-sandbox--scratch-root) root)
+    (when (sandbox-tools--overlap-p (sandbox-tools--scratch-root) root)
       (user-error "Scratch dir and project must not contain each other"))
     root))
 
-(defun emacs-sandbox--check-cache-binds (root)
+(defun sandbox-tools--check-cache-binds (root)
   "Refuse cache binds that overlap project ROOT or the scratch directory."
-  (pcase-dolist (`(,src . ,_) emacs-sandbox-cache-binds)
+  (pcase-dolist (`(,src . ,_) sandbox-tools-cache-binds)
     (let ((src (file-truename (expand-file-name src))))
-      (when (or (emacs-sandbox--overlap-p src root)
-                (emacs-sandbox--overlap-p src (emacs-sandbox--scratch-root)))
+      (when (or (sandbox-tools--overlap-p src root)
+                (sandbox-tools--overlap-p src (sandbox-tools--scratch-root)))
         (user-error "Cache bind %s overlaps project/scratch; refusing" src)))))
 
-(defun emacs-sandbox--path (root sub)
+(defun sandbox-tools--path (root sub)
   "Return the scratch directory SUB for project ROOT, without creating it.
 Projects are told apart by basename plus a hash of the full path."
   (let ((project (format "%s-%s"
                          (file-name-nondirectory (directory-file-name root))
                          (substring (md5 root) 0 12))))
-    (expand-file-name (concat project "/" sub) (emacs-sandbox--scratch-root))))
+    (expand-file-name (concat project "/" sub) (sandbox-tools--scratch-root))))
 
-(defun emacs-sandbox--dir (root sub)
+(defun sandbox-tools--dir (root sub)
   "Return the scratch directory SUB for project ROOT, creating it if needed."
-  (let ((dir (emacs-sandbox--path root sub)))
+  (let ((dir (sandbox-tools--path root sub)))
     (make-directory dir t)
     dir))
 
-(defun emacs-sandbox--check-path (path)
+(defun sandbox-tools--check-path (path)
   "Signal a `user-error' unless PATH is a relative path inside the project."
   (unless (and (stringp path) (not (string-empty-p path)))
     (user-error "Path argument is missing or empty; supply a relative file name"))
-  (let ((root (emacs-sandbox-root)))
+  (let ((root (sandbox-tools-root)))
     (unless (file-in-directory-p (expand-file-name path root) root)
       (user-error "Refusing unsafe path: %s (escapes sandbox root)" path))))
 
 ;;;; bwrap arguments
 
-(defun emacs-sandbox--base-args ()
+(defun sandbox-tools--base-args ()
   "bwrap arguments shared by command and review sandboxes."
   `("--unshare-all" "--die-with-parent" "--new-session"
     "--cap-drop" "ALL" "--clearenv"
     "--proc" "/proc" "--dev" "/dev" "--tmpfs" "/dev/shm"
     ,@(mapcan (lambda (dir) (list "--ro-bind-try" dir dir))
-              emacs-sandbox-ro-binds)
-    "--setenv" "PATH" ,emacs-sandbox-path))
+              sandbox-tools-ro-binds)
+    "--setenv" "PATH" ,sandbox-tools-path))
 
-(defun emacs-sandbox--env-args ()
-  "bwrap --setenv arguments for `emacs-sandbox-env' and preserved variables."
+(defun sandbox-tools--env-args ()
+  "bwrap --setenv arguments for `sandbox-tools-env' and preserved variables."
   (append
    (mapcan (pcase-lambda (`(,name . ,value)) (list "--setenv" name value))
-           emacs-sandbox-env)
+           sandbox-tools-env)
    (mapcan (lambda (name)
              (let ((value (getenv name)))
                (when (and value (not (string-empty-p value)))
                  (list "--setenv" name value))))
-           emacs-sandbox-preserve-env)))
+           sandbox-tools-preserve-env)))
 
-(defun emacs-sandbox--bind-args (root network)
+(defun sandbox-tools--bind-args (root network)
   "bwrap arguments for running a command in project ROOT.
 NETWORK non-nil shares the host network."
-  (emacs-sandbox--check-cache-binds root)
-  `(,@(emacs-sandbox--base-args)
+  (sandbox-tools--check-cache-binds root)
+  `(,@(sandbox-tools--base-args)
     ,@(and network '("--share-net"))
     "--dir" "/home"
-    "--bind" ,(emacs-sandbox--dir root "tmp") "/tmp"
-    "--bind" ,(emacs-sandbox--dir root "home") ,emacs-sandbox--homedir
+    "--bind" ,(sandbox-tools--dir root "tmp") "/tmp"
+    "--bind" ,(sandbox-tools--dir root "home") ,sandbox-tools--homedir
     ;; Cache binds must come after the HOME bind, which would hide them.
     ,@(mapcan (pcase-lambda (`(,src . ,dst))
                 (list "--bind-try" (expand-file-name src) dst))
-              emacs-sandbox-cache-binds)
+              sandbox-tools-cache-binds)
     ;; The project looks writable, but all writes land in "upper".
     "--overlay-src" ,(directory-file-name root)
-    "--overlay" ,(emacs-sandbox--dir root "upper") ,(emacs-sandbox--dir root "work")
-    ,emacs-sandbox--workdir
-    "--chdir" ,emacs-sandbox--workdir
+    "--overlay" ,(sandbox-tools--dir root "upper") ,(sandbox-tools--dir root "work")
+    ,sandbox-tools--workdir
+    "--chdir" ,sandbox-tools--workdir
     "--hostname" "sandbox"
-    ,@(emacs-sandbox--env-args)))
+    ,@(sandbox-tools--env-args)))
 
 ;;;; Running commands
 
-(defun emacs-sandbox--processes (root)
+(defun sandbox-tools--processes (root)
   "Live sandbox processes started for project ROOT."
   (seq-filter (lambda (proc)
                 (and (process-live-p proc)
                      (equal root (process-get proc 'sandbox-root))))
               (process-list)))
 
-(defun emacs-sandbox--busy-p (root)
+(defun sandbox-tools--busy-p (root)
   "Non-nil if a sandbox command is running for project ROOT."
-  (and (emacs-sandbox--processes root) t))
+  (and (sandbox-tools--processes root) t))
 
-(defun emacs-sandbox--check-idle (root)
+(defun sandbox-tools--check-idle (root)
   "Signal a `user-error' if a sandbox command is running for ROOT."
-  (when (emacs-sandbox--busy-p root)
+  (when (sandbox-tools--busy-p root)
     (user-error "A sandbox command is still running for %s" root)))
 
-(defconst emacs-sandbox--emit-template "\
+(defconst sandbox-tools--emit-template "\
 n=$(wc -c < %1$s)
 h=$(( %2$d / 2 ))
 if [ \"$n\" -le %2$d ]; then
@@ -268,11 +268,11 @@ fi"
   "Shell code printing the head and tail of an output file.
 Format arguments: %1$s is the file, %2$d the maximum bytes to print.")
 
-(defun emacs-sandbox--wrapper-script (command stdin spill)
+(defun sandbox-tools--wrapper-script (command stdin spill)
   "Return a shell script that runs COMMAND and prints output.
 COMMAND runs under `timeout'. If its output length exceeds
-`emacs-sandbox-max-output', its full output is saved to the file SPILL,
-capped at `emacs-sandbox-hard-output-limit' bytes. Then only the head
+`sandbox-tools-max-output', its full output is saved to the file SPILL,
+capped at `sandbox-tools-hard-output-limit' bytes. Then only the head
 and tail of SPILL are printed. If STDIN is nil, COMMAND's standard
 input is /dev/null."
   (format "%s 2>/dev/null
@@ -282,69 +282,69 @@ status=$?
 truncate -s '<%d' %s 2>/dev/null
 %s
 exit $status"
-          emacs-sandbox-ulimits
-          emacs-sandbox-keep-spills
-          emacs-sandbox-timeout (shell-quote-argument command)
+          sandbox-tools-ulimits
+          sandbox-tools-keep-spills
+          sandbox-tools-timeout (shell-quote-argument command)
           (if stdin "" "</dev/null") spill
-          emacs-sandbox-hard-output-limit spill
-          (format emacs-sandbox--emit-template spill emacs-sandbox-max-output)))
+          sandbox-tools-hard-output-limit spill
+          (format sandbox-tools--emit-template spill sandbox-tools-max-output)))
 
-(defun emacs-sandbox--format-result (code output)
+(defun sandbox-tools--format-result (code output)
   "Describe exit CODE, then OUTPUT, as the text returned to the caller."
   (format "exit %d%s\n%s"
           code
-          (cond ((= code 124) (format " (timed out after %ds)" emacs-sandbox-timeout))
+          (cond ((= code 124) (format " (timed out after %ds)" sandbox-tools-timeout))
                 ((> code 128) (format " (signal %d)" (- code 128)))
                 (t ""))
           output))
 
-(defun emacs-sandbox--on-exit (proc callback)
+(defun sandbox-tools--on-exit (proc callback)
   "Once PROC has finished, call CALLBACK with its result text."
   (let ((buf (process-buffer proc)))
     (when (and (memq (process-status proc) '(exit signal))
                (buffer-live-p buf))
       (let ((output (with-current-buffer buf (buffer-string))))
         (kill-buffer buf)
-        (funcall callback (emacs-sandbox--format-result
+        (funcall callback (sandbox-tools--format-result
                            (process-exit-status proc) output))))))
 
-(defun emacs-sandbox--run (callback command &optional network stdin)
+(defun sandbox-tools--run (callback command &optional network stdin)
   "Run COMMAND in a fresh sandbox and call CALLBACK with the result text.
 NETWORK non-nil shares the host network.  STDIN, if non-nil, is a
 string sent to the command's standard input.  Only one command may
 run at a time per project."
   (condition-case err
-      (let ((root (emacs-sandbox-root)))
-        (emacs-sandbox--check-programs "bwrap")
-        (if (emacs-sandbox--busy-p root)
+      (let ((root (sandbox-tools-root)))
+        (sandbox-tools--check-programs "bwrap")
+        (if (sandbox-tools--busy-p root)
             (funcall callback "Another sandbox command is still running for \
 this project; wait for it to finish and retry.")
           (let* ((spill (format "/tmp/out.%s" (format-time-string "%s%N")))
-                 (script (emacs-sandbox--wrapper-script command stdin spill))
+                 (script (sandbox-tools--wrapper-script command stdin spill))
                  (proc (make-process
                         :name "gptel-sandbox"
                         :buffer (generate-new-buffer " *sandbox*")
                         :noquery t
                         :connection-type 'pipe
                         :coding 'utf-8-unix
-                        :command `("bwrap" ,@(emacs-sandbox--bind-args root network)
+                        :command `("bwrap" ,@(sandbox-tools--bind-args root network)
                                    "--" "bash" "--norc" "--noprofile" "-c" ,script)
                         :sentinel (lambda (proc _event)
-                                    (emacs-sandbox--on-exit proc callback)))))
+                                    (sandbox-tools--on-exit proc callback)))))
             (process-put proc 'sandbox-root root)
             (when stdin (ignore-errors (process-send-string proc stdin)))
             (ignore-errors (process-send-eof proc))
             proc)))
     (error (funcall callback (error-message-string err)) nil)))
 
-(provide 'emacs-sandbox)
+(provide 'sandbox-tools)
 
 ;; Load the rest of the package
 (cl-eval-when (load eval)
-  (require 'emacs-sandbox-review)
+  (require 'sandbox-tools-review)
 
   ;; If gptel is available, load the tools
   (when (require 'gptel nil t)
-    (require 'emacs-sandbox-tools)))
+    (require 'sandbox-tools-tools)))
 
-;;; emacs-sandbox.el ends here
+;;; sandbox-tools.el ends here

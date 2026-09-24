@@ -1,4 +1,4 @@
-# emacs-sandbox
+# sandbox-tools
 
 Run [gptel](https://github.com/karthink/gptel/) tools or other emacs commands
 in a Linux [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`)
@@ -20,18 +20,18 @@ selectively apply them to the host file system.
 Place this directory somewhere and load it, for example:
 
 ```elisp
-(add-to-list 'load-path "~/.emacs.d/lisp/emacs-sandbox")
-(require 'emacs-sandbox)
+(add-to-list 'load-path "~/.emacs.d/lisp/sandbox-tools")
+(require 'sandbox-tools)
 ```
 
-If gptel is available, loading `emacs-sandbox` will register `run_command`,
+If gptel is available, loading `sandbox-tools` will register `run_command`,
 `write_file`, and `edit_file` with gptel under the `sandbox` category (see
 below for details).
 
 To bind the menu to a key use for example:
 
 ```elisp
-(keymap-global-set "C-c s" #'emacs-sandbox-menu)
+(keymap-global-set "C-c s" #'sandbox-tools-menu)
 ```
 
 ## How it works
@@ -44,14 +44,14 @@ Emacs' current `project.el` root is used, and if this is not available
 `default-directory` itself is used. The path is resolved through symlinks.
 
 For each project, the module creates directories under
-`emacs-sandbox-scratch-dir`, whose default is `~/.emacs.d/sandbox/`. A
+`sandbox-tools-scratch-dir`, whose default is `~/.emacs.d/sandbox/`. A
 project's directory name combines its basename and a hash of its path. The
 main entries are:
 
 - `upper/`: the sandbox's pending changes. The project is mounted at
   `/workspace` as an overlay. A file the sandbox creates or edits appears in
   `upper/` at the same relative path. The real project is never touched.
-  Changes in `upper/` can be copied back through the `emacs-sandbox-apply`
+  Changes in `upper/` can be copied back through the `sandbox-tools-apply`
   procedure described below.
 - `staging/`: a snapshot used for reviewing and applying changes.
 - `home/` and `tmp/`: sandbox `/home/sandbox` and `/tmp`. These persist across
@@ -59,17 +59,17 @@ main entries are:
 - `work/`: private scratch space required for overlayfs functionality, does
   not need to be inspected or modified.
 
-`emacs-sandbox-reset` removes `upper/`, `work/`, and `staging/`, but leaves the
+`sandbox-tools-reset` removes `upper/`, `work/`, and `staging/`, but leaves the
 sandbox HOME and `/tmp` in place.
 
 ### Sandbox permissions and environment
 
 Each tool command starts a fresh bubblewrap sandbox. The sandbox uses isolated
-namespaces and clears the environment, see `emacs-sandbox--base-args` for
+namespaces and clears the environment, see `sandbox-tools--base-args` for
 details. The sandbox has a minimal `/dev` and `/proc` and read-only access to
-the host system paths in `emacs-sandbox-ro-binds` (if they are present). A
-minimal default environment is defined in `emacs-sandbox-env`, while the
-variables in `emacs-sandbox-preserve-env` are preserved from the host shell.
+the host system paths in `sandbox-tools-ro-binds` (if they are present). A
+minimal default environment is defined in `sandbox-tools-env`, while the
+variables in `sandbox-tools-preserve-env` are preserved from the host shell.
 The project files are at `/workspace`. Writes appear in the overlay rather
 than the host project.
 
@@ -80,10 +80,10 @@ Approving shares the host network, including access to localhost.
 ### Adding writable mounts on host
 
 By default there are no writable host mounts. To add one, configure
-`emacs-sandbox-cache-binds` as `(HOST-SRC . SANDBOX-DST)` pairs, for example:
+`sandbox-tools-cache-binds` as `(HOST-SRC . SANDBOX-DST)` pairs, for example:
 
 ```elisp
-(setq emacs-sandbox-cache-binds
+(setq sandbox-tools-cache-binds
       '(("~/.cache/some-tool" . "/home/sandbox/.cache/some-tool")))
 ```
 
@@ -99,12 +99,12 @@ Tool calls do not ask for confirmation, except for network acces.
   directory change (`cd subdir && ...`). Only one command may run at a time
   for a given project. Standard error is combined with standard output. The
   captured output is capped and returned as a head-and-tail excerpt. The
-  command is timed out after `emacs-sandbox-timeout` seconds (120 by default).
+  command is timed out after `sandbox-tools-timeout` seconds (120 by default).
   Prefer bounded inspection commands such as `grep`, `head`, `sed -n`, `wc`,
   or `git ls-files` rather than dumping large files.
 - **`read_file`** returns a text file's lines verbatim (optionally from
   `offset`, at most `limit` lines). Output is cut at a line boundary after
-  `emacs-sandbox-max-read-output` bytes (60000 by default), with a note giving
+  `sandbox-tools-max-read-output` bytes (60000 by default), with a note giving
   the offset to continue from. Requires Python 3 in the sandbox.
 - **`write_file`** creates or overwrites a file in the project overlay. Supply
   the entire file contents; it is not a patch operation. Its path must be
@@ -120,15 +120,15 @@ Tool calls do not ask for confirmation, except for network acces.
 
 ## Reviewing, applying, and discarding changes
 
-The following commands can be accessed through the `emacs-sandbox-menu`:
+The following commands can be accessed through the `sandbox-tools-menu`:
 
-- `emacs-sandbox-diff` displays changes between sandbox and host
-- `emacs-sandbox-apply` to copy the selected items to the host project
-- `emacs-sandbox-reset` to discard the changes in the sandbox
-- `emacs-sandbox-status` reports whether a command is running and whether there are changes
-- `emacs-sandbox-interrupt` kills running command processes for the current project
-- `emacs-sandbox-command` run a custom command in the sandbox
+- `sandbox-tools-diff` displays changes between sandbox and host
+- `sandbox-tools-apply` to copy the selected items to the host project
+- `sandbox-tools-reset` to discard the changes in the sandbox
+- `sandbox-tools-status` reports whether a command is running and whether there are changes
+- `sandbox-tools-interrupt` kills running command processes for the current project
+- `sandbox-tools-command` run a custom command in the sandbox
 
 ## Configuration
 
-Options are in the `emacs-sandbox` customization group.
+Options are in the `sandbox-tools` customization group.
