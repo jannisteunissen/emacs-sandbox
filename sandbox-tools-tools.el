@@ -70,8 +70,9 @@ To change files, use `write_file' or `edit_file' (not shell redirection/sed -i).
 
 Other notes:
   * /tmp persists between calls.
-  * Each call is a fresh shell: cwd/env do not persist. Chain with `cd sub && …'.
-  * Only one command runs at a time per project.
+  * cwd/env do not persist between calls. Chain with `cd sub && …'.
+  * When possible issue multiple independent tool calls in one response.
+  * Commands run in call order (with queueing).
   * Environment is minimal (cleared + whitelist).
   * No network unless `network' is JSON true (requires user approval).
   * stderr is merged into stdout; output is a truncated head+tail slice, so prefer
@@ -139,13 +140,23 @@ Safety:
 
 ;;;; edit_file
 
+(defconst sandbox-tools--dir
+  (file-name-directory
+   (or load-file-name
+       (bound-and-true-p byte-compile-current-file)
+       (locate-library "sandbox-tools-tools")
+       buffer-file-name
+       (error "sandbox-tools: cannot locate library directory")))
+  "Directory containing sandbox-tools-tools.el and its helper scripts.")
+
 (defun sandbox-tools--script-source (file)
   "Return the contents of FILE, found next to this library."
-  (with-temp-buffer
-    (insert-file-contents
-     (expand-file-name file (file-name-directory
-                             (or load-file-name buffer-file-name))))
-    (buffer-string)))
+  (let ((path (expand-file-name file sandbox-tools--dir)))
+    (unless (file-readable-p path)
+      (error "sandbox-tools: missing helper script %s" path))
+    (with-temp-buffer
+      (insert-file-contents path)
+      (buffer-string))))
 
 (defun sandbox-tools--python-command (script &rest args)
   "Shell command running Python SCRIPT (source text) with ARGS."
@@ -238,7 +249,8 @@ larger output limit than run_command.
     (no line-number prefixes — copy text from it verbatim for edit_file).
   * Long files are cut at a line boundary; a trailing note then gives the
     `offset' to continue from.  Use `offset'/`limit' to read a range.
-  * For searching, prefer run_command with grep -n."
+  * For searching, prefer run_command with grep -n.
+  * When possible issue multiple independent reads in one response."
  :args '((:name "path" :type string
                 :description "Relative path from project root (no leading / or ..).")
          (:name "offset" :type integer :optional t
@@ -254,17 +266,17 @@ as many as fit in the output limit)."))
            (limit  (sandbox-tools--int-arg "limit" limit 0)))
        (sandbox-tools--check-path path)
        ;; read_file.py caps the content itself, at a line boundary.  Raise
-       ;; the generic head+tail cap (read while building the wrapper
-       ;; script, synchronously) so it leaves room for header and notes.
-       (let ((sandbox-tools-max-output
-              (max sandbox-tools-max-output
-                   (+ sandbox-tools-max-read-output 4096 (string-bytes path)))))
-         (sandbox-tools--run
-          cb
-          (sandbox-tools--python-command
-           sandbox-tools--read-script path
-           (number-to-string offset) (number-to-string limit)
-           (number-to-string sandbox-tools-max-read-output))))))))
+       ;; the generic head+tail cap so it leaves room for header and notes.
+       ;; Passed explicitly: the wrapper is built when the job is dequeued.
+       (sandbox-tools--run
+        cb
+        (sandbox-tools--python-command
+         sandbox-tools--read-script path
+         (number-to-string offset) (number-to-string limit)
+         (number-to-string sandbox-tools-max-read-output))
+        nil nil
+        (max sandbox-tools-max-output
+             (+ sandbox-tools-max-read-output 4096 (string-bytes path))))))))
 
 (provide 'sandbox-tools-tools)
 ;;; sandbox-tools-tools.el ends here

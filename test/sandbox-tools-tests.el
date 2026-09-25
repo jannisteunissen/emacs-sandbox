@@ -223,16 +223,41 @@ Waits at most WAIT seconds (default 30); returns nil on timeout."
       (should (string-match-p "4900 bytes elided" result))
       (should (< (length result) 400)))))
 
-(ert-deftest sandbox-tools-test-run-busy ()
-  "Only one command at a time may run per project."
+(defun sandbox-tools--run (callback command &optional network stdin max-output)
+  "Run COMMAND in a fresh sandbox and call CALLBACK with the result text.
+NETWORK non-nil shares the host network.  STDIN, if non-nil, is a
+string sent to the command's standard input.  MAX-OUTPUT, if non-nil,
+overrides `sandbox-tools-max-output' for this command.  Commands for
+the same project are queued and run one at a time, in order.
+CALLBACK is called exactly once."
+  (condition-case err
+      (let ((root (sandbox-tools-root)))
+        (sandbox-tools--check-programs "bwrap")
+        (setf (gethash root sandbox-tools--queue)
+              (nconc (gethash root sandbox-tools--queue)
+                     (list (list callback command network stdin max-output))))
+        (sandbox-tools--next root))
+    (error (sandbox-tools--safe-call callback (error-message-string err)))))
+
+(ert-deftest sandbox-tools-test-run-queue ()
+  "Commands for the same project are queued and run in order."
   (sandbox-tools-tests--with-bwrap
-    (let ((proc (sandbox-tools--run #'ignore "sleep 5")))
-      (unwind-protect
-          (progn
-            (should (sandbox-tools--busy-p root))
-            (should (string-match-p "still running"
-                                    (sandbox-tools-tests--run "echo hi"))))
-        (delete-process proc)))))
+   (let ((root (sandbox-tools-root))
+         (results nil))
+     (let ((collect (lambda (out) (push out results))))
+       (sandbox-tools--run collect "sleep 1; echo first")
+       ;; These must be queued behind the running command.
+       (sandbox-tools--run collect "echo second")
+       (sandbox-tools--run collect "echo third")
+       (should-not results)
+       (with-timeout (15 (ert-fail "Timed out waiting for queued commands"))
+         (while (< (length results) 3)
+           (accept-process-output nil 0.1)))
+       (setq results (nreverse results))
+       (should (= (length results) 3))
+       (should (string-match-p "first" (nth 0 results)))
+       (should (string-match-p "second" (nth 1 results)))
+       (should (string-match-p "third" (nth 2 results)))))))
 
 (ert-deftest sandbox-tools-test-spill-cleanup ()
   "Truncated outputs are spilled to /tmp and only the newest are kept."

@@ -98,8 +98,8 @@ WARNING: HOST-SRC is directly writable on the host and bypasses the overlay."
   :type 'integer)
 
 (defcustom sandbox-tools-max-read-output 60000
-     "Bytes of file content returned by the read_file tool."
-     :type 'integer)
+  "Bytes of file content returned by the read_file tool."
+  :type 'integer)
 
 (defcustom sandbox-tools-hard-output-limit (* 8 1024 1024)
   "Truncate captured command output after this many bytes."
@@ -114,6 +114,10 @@ WARNING: HOST-SRC is directly writable on the host and bypasses the overlay."
 Avoid -v (breaks JVM, Go and rustc) and -f (breaks compilers); output
 size is capped by `sandbox-tools-hard-output-limit' instead."
   :type 'string)
+
+(defcustom sandbox-tools-cancel-on-abort t
+  "Non-nil means `gptel-abort' also cancels sandbox commands for the project."
+  :type 'boolean)
 
 (defcustom sandbox-tools-keep-spills 20
   "Number of truncated command outputs kept in the sandbox's /tmp."
@@ -238,21 +242,39 @@ NETWORK non-nil shares the host network."
 
 ;;;; Running commands
 
-(defun sandbox-tools--processes (root)
-  "Live sandbox processes started for project ROOT."
-  (seq-filter (lambda (proc)
-                (and (process-live-p proc)
-                     (equal root (process-get proc 'sandbox-root))))
-              (process-list)))
+(defvar sandbox-tools--queue (make-hash-table :test #'equal)
+  "Pending jobs (CALLBACK COMMAND NETWORK STDIN MAX-OUTPUT) per project
+root, oldest first.")
 
-(defun sandbox-tools--busy-p (root)
-  "Non-nil if a sandbox command is running for project ROOT."
-  (and (sandbox-tools--processes root) t))
+(defvar sandbox-tools--running (make-hash-table :test #'equal)
+  "The sandbox process per project root.
+The entry is set when the process starts and cleared by its sentinel.
+It stays set while a dead process's sentinel is still pending, so two
+overlay mounts never share the same upper/work directories.")
 
 (defun sandbox-tools--check-idle (root)
-  "Signal a `user-error' if a sandbox command is running for ROOT."
-  (when (sandbox-tools--busy-p root)
+  "Signal a `user-error' if a sandbox command is running or queued for ROOT."
+  (when (or (gethash root sandbox-tools--running)
+            (gethash root sandbox-tools--queue))
     (user-error "A sandbox command is still running for %s" root)))
+
+(defun sandbox-tools--safe-call (callback result)
+  "Call CALLBACK with RESULT.  Report its errors instead of signaling them."
+  (condition-case err
+      (funcall callback result)
+    (error (message "sandbox-tools: callback failed: %s"
+                    (error-message-string err)))))
+
+(defun sandbox-tools--next (root)
+  "Start queued commands for ROOT while none is running.
+A job that fails to start gets an error result, and the next job is tried."
+  (while (and (not (gethash root sandbox-tools--running))
+              (gethash root sandbox-tools--queue))
+    (let ((job (pop (gethash root sandbox-tools--queue))))
+      (condition-case err
+          (apply #'sandbox-tools--start root job)
+        (error (sandbox-tools--safe-call (car job)
+                                         (error-message-string err)))))))
 
 (defconst sandbox-tools--emit-template "\
 n=$(wc -c < %1$s)
@@ -268,10 +290,10 @@ fi"
   "Shell code printing the head and tail of an output file.
 Format arguments: %1$s is the file, %2$d the maximum bytes to print.")
 
-(defun sandbox-tools--wrapper-script (command stdin spill)
+(defun sandbox-tools--wrapper-script (command stdin spill max-output)
   "Return a shell script that runs COMMAND and prints output.
 COMMAND runs under `timeout'. If its output length exceeds
-`sandbox-tools-max-output', its full output is saved to the file SPILL,
+MAX_OUTPUT, its full output is saved to the file SPILL,
 capped at `sandbox-tools-hard-output-limit' bytes. Then only the head
 and tail of SPILL are printed. If STDIN is nil, COMMAND's standard
 input is /dev/null."
@@ -287,7 +309,7 @@ exit $status"
           sandbox-tools-timeout (shell-quote-argument command)
           (if stdin "" "</dev/null") spill
           sandbox-tools-hard-output-limit spill
-          (format sandbox-tools--emit-template spill sandbox-tools-max-output)))
+          (format sandbox-tools--emit-template spill max-output)))
 
 (defun sandbox-tools--format-result (code output)
   "Describe exit CODE, then OUTPUT, as the text returned to the caller."
@@ -300,42 +322,98 @@ exit $status"
 
 (defun sandbox-tools--on-exit (proc callback)
   "Once PROC has finished, call CALLBACK with its result text."
-  (let ((buf (process-buffer proc)))
-    (when (and (memq (process-status proc) '(exit signal))
-               (buffer-live-p buf))
-      (let ((output (with-current-buffer buf (buffer-string))))
-        (kill-buffer buf)
-        (funcall callback (sandbox-tools--format-result
-                           (process-exit-status proc) output))))))
+  (let* ((buf (process-buffer proc))
+         (output (if (buffer-live-p buf)
+                     (prog1 (with-current-buffer buf (buffer-string))
+                       (kill-buffer buf))
+                   ""))
+         (code (process-exit-status proc)))
+    (sandbox-tools--safe-call
+     callback
+     (cond ((process-get proc 'sandbox-cancelled)
+            (concat "cancelled by user\n" output))
+           ((eq (process-status proc) 'signal)
+            (format "killed by signal %d\n%s" code output))
+           (t (sandbox-tools--format-result code output))))))
 
-(defun sandbox-tools--run (callback command &optional network stdin)
+(defun sandbox-tools--start (root callback command network stdin max-output)
+  "Start COMMAND for ROOT now.  Only `sandbox-tools--next' calls this.
+MAX-OUTPUT, if non-nil, overrides `sandbox-tools-max-output'."
+  (let* ((spill (format "/tmp/out.%s" (format-time-string "%s%N")))
+         (script (sandbox-tools--wrapper-script
+                  command stdin spill
+                  (or max-output sandbox-tools-max-output)))
+         (args (sandbox-tools--bind-args root network))
+         (proc (make-process
+                :name "gptel-sandbox"
+                :buffer (generate-new-buffer " *sandbox*")
+                :noquery t
+                :connection-type 'pipe
+                :coding 'utf-8-unix
+                :command `("bwrap" ,@args
+                           "--" "bash" "--norc" "--noprofile" "-c" ,script)
+                :sentinel
+                (lambda (proc _event)
+                  (when (memq (process-status proc) '(exit signal))
+                    (unwind-protect (sandbox-tools--on-exit proc callback)
+                      (when (eq (gethash root sandbox-tools--running) proc)
+                        (remhash root sandbox-tools--running))
+                      (sandbox-tools--next root)))))))
+    ;; Sentinels only run while Emacs waits, so nothing can run between
+    ;; `make-process' and these lines.
+    (puthash root proc sandbox-tools--running)
+    (process-put proc 'sandbox-root root)
+    (when stdin (ignore-errors (process-send-string proc stdin)))
+    (ignore-errors (process-send-eof proc))
+    proc))
+
+(defun sandbox-tools--run (callback command &optional network stdin max-output)
   "Run COMMAND in a fresh sandbox and call CALLBACK with the result text.
 NETWORK non-nil shares the host network.  STDIN, if non-nil, is a
-string sent to the command's standard input.  Only one command may
-run at a time per project."
+string sent to the command's standard input.  MAX-OUTPUT, if non-nil,
+overrides `sandbox-tools-max-output' for this command.  Commands for
+the same project are queued and run one at a time, in order.
+CALLBACK is called exactly once."
   (condition-case err
       (let ((root (sandbox-tools-root)))
         (sandbox-tools--check-programs "bwrap")
-        (if (sandbox-tools--busy-p root)
-            (funcall callback "Another sandbox command is still running for \
-this project; wait for it to finish and retry.")
-          (let* ((spill (format "/tmp/out.%s" (format-time-string "%s%N")))
-                 (script (sandbox-tools--wrapper-script command stdin spill))
-                 (proc (make-process
-                        :name "gptel-sandbox"
-                        :buffer (generate-new-buffer " *sandbox*")
-                        :noquery t
-                        :connection-type 'pipe
-                        :coding 'utf-8-unix
-                        :command `("bwrap" ,@(sandbox-tools--bind-args root network)
-                                   "--" "bash" "--norc" "--noprofile" "-c" ,script)
-                        :sentinel (lambda (proc _event)
-                                    (sandbox-tools--on-exit proc callback)))))
-            (process-put proc 'sandbox-root root)
-            (when stdin (ignore-errors (process-send-string proc stdin)))
-            (ignore-errors (process-send-eof proc))
-            proc)))
-    (error (funcall callback (error-message-string err)) nil)))
+        (setf (gethash root sandbox-tools--queue)
+              (nconc (gethash root sandbox-tools--queue)
+                     (list (list callback command network stdin max-output))))
+        (sandbox-tools--next root))
+    (error (sandbox-tools--safe-call callback (error-message-string err)))))
+
+;;;; Cancellation
+
+(defun sandbox-tools-cancel (&optional root)
+  "Cancel queued and running sandbox commands for project ROOT.
+Queued jobs get a \"cancelled\" result right away.  The running process
+is killed, and its sentinel reports the cancellation.  Its slot is kept
+until then, so no new sandbox can mount the overlay too early."
+  (interactive)
+  (let* ((root (or root (sandbox-tools-root)))
+         (jobs (gethash root sandbox-tools--queue))
+         (proc (gethash root sandbox-tools--running))
+         (live (and proc (process-live-p proc))))
+    (remhash root sandbox-tools--queue)
+    (dolist (job jobs)
+      (sandbox-tools--safe-call (car job) "cancelled by user: command was not run"))
+    (when live
+      (process-put proc 'sandbox-cancelled t)
+      (kill-process proc))
+    (when (called-interactively-p 'any)
+      (message "Sandbox: cancelled %d queued%s"
+               (length jobs) (if live " + 1 running" "")))))
+
+(defun sandbox-tools--on-gptel-abort (&optional buf &rest _)
+  "Cancel sandbox commands for the project of BUF after `gptel-abort'."
+  (when sandbox-tools-cancel-on-abort
+    (ignore-errors
+      (with-current-buffer (or buf (current-buffer))
+        (sandbox-tools-cancel)))))
+
+(with-eval-after-load 'gptel
+  (advice-add 'gptel-abort :after #'sandbox-tools--on-gptel-abort))
 
 (provide 'sandbox-tools)
 
