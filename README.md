@@ -95,7 +95,7 @@ reset, so use with care!
 Tool calls do not ask for confirmation, except for network acces.
 
 - **`run_command`** runs a Bash command from `/workspace`. Each call has a
-  fresh shell and environment. Only one command can run at a time for a given
+  fresh shell and environment. Commands are queued an execute sequentially per
   project. Standard error is combined with standard output. If the output
   exceeds `sandbox-tools-max-output`, it is stored in a temporary file (whose
   name is given) and only the start and end of the output are returned.
@@ -106,7 +106,6 @@ Tool calls do not ask for confirmation, except for network acces.
   entire file contents should be passed.
 - **`edit_file`** replaces a literal block in a file in a somewhat robust manner.
   Requires Python 3 in the sandbox.
-
 
 ## Reviewing, applying, and discarding changes
 
