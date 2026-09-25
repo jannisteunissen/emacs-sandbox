@@ -62,29 +62,19 @@ An async gptel tool must always call its callback, or the request hangs."
 
 (gptel-make-tool
  :name "run_command" :category "sandbox" :async t :include t :confirm nil
- :description "Run a bash command inside a sandbox.
+ :description "Run a bash command in a sandbox (cwd: /workspace, the project root).
 
-CWD is the project root (/workspace).
-
-To change files, use `write_file' or `edit_file' (not shell redirection/sed -i).
-
-Other notes:
-  * /tmp persists between calls.
-  * cwd/env do not persist between calls. Chain with `cd sub && …'.
-  * When possible issue multiple independent tool calls in one response.
-  * Commands run in call order (with queueing).
-  * Environment is minimal (cleared + whitelist).
-  * No network unless `network' is JSON true (requires user approval).
-  * stderr is merged into stdout; output is a truncated head+tail slice, so prefer
-    grep/head/tail/wc over dumping large files.
-  * Read: cat FILE, sed -n '10,40p' FILE, grep -n PAT FILE
-  * List: git ls-files, or find"
+- Edit files with `write_file'/`edit_file', not redirection or sed -i.
+- cwd/env reset each call (use `cd dir && …`); /tmp persists.
+- Minimal env; no network unless `network' is true.
+- stderr merged into stdout; long output is truncated (head+tail),
+  so prefer grep/head/tail/wc/sed -n over dumping files.
+- Batch independent calls in one response; they run in order."
  :args '((:name "command" :type string
-                :description "Bash command line. Chain with && (cwd not kept).")
+                :description "Bash command line.")
          (:name "network" :type boolean :optional t
-                :description "JSON boolean. Pass true ONLY if the command needs \
-network access (needs user approval; grants internet + host network + \
-localhost).  Otherwise omit it or pass false."))
+                :description "true only if internet/localhost access is needed \
+(requires user approval)."))
  :function
  (lambda (cb command &optional network &rest _)
    (sandbox-tools--with-cb cb
@@ -111,22 +101,13 @@ fi"
 
 (gptel-make-tool
  :name "write_file" :category "sandbox" :async t :include t :confirm nil
- :description "Create or OVERWRITE a file with `content'.
-
-DESTRUCTIVE: previous contents are discarded — supply the ENTIRE new file text.
-
-Which tool:
-  * New file, or small file rewritten in full -> write_file
-  * Targeted edit in an existing/large file   -> edit_file
-
-Safety:
-  * On success reports the byte count — ALWAYS check it: 0 or far-too-small
-    means `content' was truncated; restore the file before continuing.
-  * Path must be inside project root"
+ :description "Create or OVERWRITE a file with the full `content'.
+Use for new files or full rewrites of small files; prefer edit_file for targeted edits.
+Returns byte count"
  :args '((:name "path" :type string
-                :description "Relative path from root (no leading / or ..).")
+                :description "Path relative to project root")
          (:name "content" :type string
-                :description "COMPLETE new file contents (not a patch/fragment)."))
+                :description "Complete file contents, not a patch"))
  :function
  (lambda (cb path content &rest _)
    (sandbox-tools--with-cb cb
@@ -177,33 +158,23 @@ exec python3 -c %s %s"
 
 (gptel-make-tool
  :name "edit_file" :category "sandbox" :async t :include t :confirm nil
- :description "Replace an exact block of text in an existing file, inside the
-sandbox (/workspace).  Preferred over write_file for targeted edits.
+ :description "Replace a block of text in an existing file under /workspace.
+Prefer this over write_file for targeted edits.
 
-HOW TO USE (read carefully):
-  * `old' must be copied VERBATIM from the file — same spelling, same
-    indentation, same blank lines.  Read the file first (cat / sed -n).
-  * `old' must be UNIQUE: include a few lines above and below the change.
-  * `new' is the full replacement for `old' (use \"\" to delete it).
-  * Do NOT send a unified diff, and do NOT include +/- or @@ markers:
-    this tool takes literal before/after text, not a patch.
-
-BEHAVIOUR:
-  * If the exact text is not found, a whitespace/indentation-tolerant
-    line match is tried; the result is re-indented to match the file.
-  * On failure you get the reason plus the closest matching lines — fix
-    `old' and retry; nothing is modified.
-  * On success you get a unified diff of what actually changed: CHECK IT."
+- `old': literal text copied verbatim from the file (read it first), with
+  enough surrounding lines to be unique.  Not a diff: no +/-/@@ markers.
+- `new': replacement text (\"\" deletes).
+- If no exact match, a whitespace-tolerant match is tried and re-indented.
+- On failure, nothing changes; you get the reason and closest lines. Retry.
+- On success, returns the applied diff."
  :args '((:name "path" :type string
-                :description "Relative path from project root (no leading / or ..).")
+                :description "Path relative to project root (no leading / or ..).")
          (:name "old" :type string
-                :description "Exact text to replace, copied verbatim from the file.")
+                :description "Verbatim text to replace.")
          (:name "new" :type string
-                :description "Replacement text (empty string deletes `old').")
+                :description "Replacement text; \"\" deletes.")
          (:name "replace_all" :type boolean :optional t
-                :description "JSON boolean. Pass true to replace every \
-occurrence instead of requiring `old' to be unique.  Otherwise omit it or \
-pass false."))
+                :description "true to replace every occurrence; omit otherwise."))
  :function
  (lambda (cb path old new &optional replace_all &rest _)
    (sandbox-tools--with-cb cb
