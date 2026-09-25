@@ -516,7 +516,9 @@ The sandbox's /tmp and HOME are kept."
     (message "Sandbox %s: %s%s"
              (abbreviate-file-name root)
              (if changed "staged data present" "empty")
-             (if (sandbox-tools--busy-p root) ", command running" ""))))
+             (if (or (gethash root sandbox-tools--running)
+                     (gethash root sandbox-tools--queue))
+                 ", command running" ""))))
 
 ;;;###autoload
 (defun sandbox-tools-command (command)
