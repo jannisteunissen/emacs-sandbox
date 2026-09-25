@@ -6,8 +6,8 @@
 
 ;;; Commentary:
 
-;; Register the run_command, write_file and edit_file tools with gptel.
-;; Loading this file registers the tools.
+;; Register the run_command, read_file, write_file and edit_file tools with
+;; gptel. Loading this file registers the tools.
 
 ;;; Code:
 
